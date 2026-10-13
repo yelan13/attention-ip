@@ -311,6 +311,6 @@ powershell -ExecutionPolicy Bypass -File run_sim.ps1 -NoWave
 | 仿真脚本 | `sim/run_sim.ps1`（Windows 一键）、`sim/run_sim.sh`（Linux/macOS）、`sim/gen_vectors.py`（激励与期望值生成） |
 | 波形 | `sim/waves/tb_attention.vcd`（GTKWave 直接打开） |
 | 结果截图 | `doc/wave_overview.png`、`doc/wave_datapath.png`、`doc/wave_softmax.png`、`doc/wave_output.png`、`doc/sim_log.png` |
-| 5-8 页设计报告 | `doc/Attention加速器IP设计报告.docx`（8 页） |
-| 5-8 分钟汇报 PPT | `doc/Attention加速器IP汇报.pptx`（10 页） |
+| 5-8 页设计报告 | `doc/Attention加速器IP设计报告.docx`（8 页）与 `doc/Attention加速器IP设计报告.pdf` |
+| 5-8 分钟汇报 PPT | `doc/Attention加速器IP汇报.pptx`（11 页，含加分项页）与 `doc/Attention加速器IP汇报.pdf` |
 | README：工具版本、运行命令、文件结构 | 本文件 |
