@@ -23,11 +23,16 @@ module attention_top #(
     parameter int S      = 8,    // Token 数量
     parameter int D      = 4,    // Head 维度
     parameter int DW     = 8,    // Q/K/V/O 数据位宽(有符号)
-    parameter int W_FRAC = 4     // weight 小数位宽(题目固定 4)
+    parameter int W_FRAC = 4,    // weight 小数位宽(题目固定 4)
+    // ---- 加分项 A: 因果 Mask(当 j > pos_i 时屏蔽该 Key) ----
+    parameter bit MASK_EN = 1'b0,   // 1 = 使能因果 Mask
+    // ---- 加分项 B: 点积并行度(1 = 单乘法器串行, D = D 路并行) ----
+    parameter int DOT_PAR = 1
 )(
     input  logic                 clk,
     input  logic                 rst_n,
     input  logic                 start,
+    input  logic [3:0]           pos_i,     // 当前 Query 位置(因果 Mask 用; MASK_EN=0 时忽略)
     input  logic signed [DW-1:0] q_in,
     input  logic signed [DW-1:0] k_in,
     input  logic signed [DW-1:0] v_in,
@@ -61,7 +66,8 @@ module attention_top #(
     //=================================================================
     typedef enum logic [3:0] {
         ST_IDLE, ST_LOAD_Q, ST_LOAD_KV, ST_DOT, ST_MAX,
-        ST_EXP, ST_ACC, ST_NORM, ST_NORM_WAIT, ST_OUT, ST_DONE
+        ST_EXP, ST_ACC, ST_NORM, ST_NORM_WAIT, ST_OUT, ST_DONE,
+        ST_DOT_FAST                       // 加分项 B: 并行点积状态
     } state_e;
 
     state_e state;
@@ -91,6 +97,21 @@ module attention_top #(
     //=================================================================
     logic signed [MUL_W-1:0] dot_prod;
     assign dot_prod = q_reg[dot_cnt] * k_buf[tok*D + dot_cnt];
+
+    // ---- 加分项 B: D 路并行点积(只有 DOT_PAR > 1 时才生成乘法器) ----
+    logic signed [SCR_W-1:0] dot_sum_par;
+    generate
+        if (DOT_PAR > 1) begin : g_dot_par
+            always_comb begin
+                dot_sum_par = '0;
+                for (int k = 0; k < D; k++) begin
+                    dot_sum_par = dot_sum_par + q_reg[k] * k_buf[tok*D + k];
+                end
+            end
+        end else begin : g_dot_ser
+            assign dot_sum_par = '0;
+        end
+    endgenerate
 
     //=================================================================
     //  指数查找表
@@ -233,7 +254,8 @@ module attention_top #(
                     k_buf[kv_cnt] <= k_in;
                     v_buf[kv_cnt] <= v_in;
                     if (kv_cnt == KC_W'(S*D-1)) begin
-                        state   <= ST_DOT;
+                        // 加分项 B: DOT_PAR > 1 时进入并行点积状态(1 拍 1 个 Score)
+                        state   <= (DOT_PAR > 1) ? ST_DOT_FAST : ST_DOT;
                         tok     <= '0;
                         dot_cnt <= '0;
                         dot_acc <= '0;
@@ -263,6 +285,18 @@ module attention_top #(
                 end
             end
             //---------------------------------------------------------
+            //  DOT_FAST: 加分项 B 并行点积, 每拍完成一个 Score(D 个乘法器)
+            //---------------------------------------------------------
+            ST_DOT_FAST: begin
+                score_buf[tok] <= dot_sum_par;
+                if (tok == TC_W'(S-1)) begin
+                    tok   <= '0;
+                    state <= ST_MAX;
+                end else begin
+                    tok <= tok + 1'b1;
+                end
+            end
+            //---------------------------------------------------------
             //  MAX: 检索 S 个 Score 的最大值
             //---------------------------------------------------------
             ST_MAX: begin
@@ -278,7 +312,10 @@ module attention_top #(
                         tok <= {{(TC_W-1){1'b0}}, 1'b1};
                     end
                 end else begin
-                    if (score_buf[tok] > xmax) xmax <= score_buf[tok];
+                    // 加分项 A: 因果 Mask 时, 被屏蔽的 Key 不参与最大值检索
+                    if ((MASK_EN == 1'b0) || (tok <= pos_i)) begin
+                        if (score_buf[tok] > xmax) xmax <= score_buf[tok];
+                    end
                     if (tok == TC_W'(S-1)) begin
                         state   <= ST_EXP;
                         tok     <= '0;
@@ -294,8 +331,13 @@ module attention_top #(
             //  EXP: weight = exp(score - x_max), 同时累加 L
             //---------------------------------------------------------
             ST_EXP: begin
-                weight_buf[exp_cnt] <= exp_w;
-                lsum <= lsum + L_W'(exp_w);
+                // 加分项 A: j > pos_i 的 Key 权重直接置 0(不进入 L)
+                if (MASK_EN && (exp_cnt > pos_i)) begin
+                    weight_buf[exp_cnt] <= '0;
+                end else begin
+                    weight_buf[exp_cnt] <= exp_w;
+                    lsum <= lsum + L_W'(exp_w);
+                end
                 if (exp_cnt == TC_W'(S-1)) begin
                     exp_cnt <= '0;
                     acc_cnt <= '0;

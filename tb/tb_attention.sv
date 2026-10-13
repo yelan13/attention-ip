@@ -24,10 +24,15 @@
 `ifndef VCDFILE
     `define VCDFILE "waves/tb_attention.vcd"
 `endif
+// 加分项 B: 点积并行度, 编译时用 -DTB_DOT_PAR=4 可切换到 D 路并行版本
+`ifndef TB_DOT_PAR
+    `define TB_DOT_PAR 1
+`endif
 
 module tb_attention;
     localparam int S         = 8;                       // Token 数
     localparam int D         = 4;                       // 维度
+    localparam int DOT_PAR   = `TB_DOT_PAR;             // 1 = 串行点积, D = 并行点积
     localparam int CASE_LEN  = 2*D + 2*S*D;             // 每个用例字节数
     localparam int OUT_OFF   = D + 2*S*D;               // 期望输出偏移
     localparam int VEC_LEN   = `NCASES*CASE_LEN;
@@ -41,6 +46,7 @@ module tb_attention;
 
     //---------------- DUT 接口 ----------------
     logic               start    = 1'b0;
+    logic [3:0]         pos_i    = 4'(`TB_DOT_PAR > 1 ? 0 : 0);   // 因果 Mask 位置(MASK_EN=0 时忽略)
     logic               q_valid  = 1'b0;
     logic               kv_valid = 1'b0;
     logic signed [7:0]  q_in     = 8'sd0;
@@ -51,10 +57,11 @@ module tb_attention;
     logic               done;
     logic               data_ready;
 
-    attention_top #(.S(S), .D(D)) dut (
+    attention_top #(.S(S), .D(D), .MASK_EN(1'b0), .DOT_PAR(DOT_PAR)) dut (
         .clk        (clk),
         .rst_n      (rst_n),
         .start      (start),
+        .pos_i      (pos_i),
         .q_in       (q_in),
         .k_in       (k_in),
         .v_in       (v_in),
@@ -155,6 +162,7 @@ module tb_attention;
         // 复位
         repeat (4) @(negedge clk);
         rst_n = 1'b1;
+        pos_i = 4'(S-1);          // 基准测试不做 Mask, 接最大值
         repeat (2) @(negedge clk);
 
         for (c = 0; c < `NCASES; c++) begin

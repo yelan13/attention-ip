@@ -46,16 +46,23 @@ def exp_lut_value(diff: int, frac: int = FRAC_DEFAULT) -> int:
 
 
 def attention(q: List[int], k: List[List[int]], v: List[List[int]],
-              frac: int = FRAC_DEFAULT) -> Dict[str, object]:
-    """定点黄金模型, 返回与 RTL 逐位一致的全部中间结果。"""
+              frac: int = FRAC_DEFAULT, pos: int = None) -> Dict[str, object]:
+    """
+    定点黄金模型, 返回与 RTL 逐位一致的全部中间结果。
+
+    pos: 加分项 A 的因果 Mask。给定时只允许 j <= pos 的 Key 参与 Softmax
+         (被屏蔽的 Key 权重为 0, 且不参与 x_max 检索), 与 RTL 的 MASK_EN=1 行为一致。
+    """
     s = len(k)
     d = len(q)
     assert all(len(row) == d for row in k), "K 维度与 Q 不一致"
     assert all(len(row) == d for row in v), "V 维度与 Q 不一致"
 
     scores = [sum(q[x] * k[j][x] for x in range(d)) for j in range(s)]
-    xmax = max(scores)
-    weights = [exp_lut_value(scores[j] - xmax, frac) for j in range(s)]
+    valid = list(range(s)) if pos is None else list(range(min(pos, s - 1) + 1))
+    xmax = max(scores[j] for j in valid)
+    weights = [exp_lut_value(scores[j] - xmax, frac) if j in valid else 0
+               for j in range(s)]
     lsum = sum(weights)
     acc = [sum(weights[j] * v[j][x] for j in range(s)) for x in range(d)]
     out = [round_half_away(a / lsum) if lsum else 0 for a in acc]

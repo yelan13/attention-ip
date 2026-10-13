@@ -11,6 +11,8 @@
 param(
     [int]   $Random = 32,          # 随机用例数量
     [int]   $Seed   = 20260912,    # 随机种子
+    [int]   $DotPar = 1,           # 加分项 B: 点积并行度(1=串行, 4=D 路并行)
+    [switch]$Mask,                 # 加分项 A: 只跑因果 Mask 独立测试
     [switch]$Stress,               # 压力测试(400 随机用例, 不生成波形以节省时间)
     [switch]$NoWave                # 不生成波形图片
 )
@@ -48,12 +50,22 @@ New-Item -ItemType Directory -Force -Path (Join-Path $here "waves") | Out-Null
 
 Push-Location $here
 try {
+    # ---------- 加分项 A: 因果 Mask 独立测试 ----------
+    if ($Mask) {
+        Write-Host "==> 因果 Mask 独立测试 (tb_attention_mask.sv)" -ForegroundColor Cyan
+        & $iverilog -g2012 -Wall -o mask.vvp `
+            ..\rtl\exp_lut.sv ..\rtl\seq_div.sv ..\rtl\attention_top.sv ..\tb\tb_attention_mask.sv
+        if ($LASTEXITCODE -ne 0) { throw "因果 Mask 测试编译失败" }
+        & $vvp mask.vvp
+        return
+    }
+
     Write-Host "==> [1/4] 生成测试激励 (随机用例 $Random 个, seed=$Seed)" -ForegroundColor Cyan
     & $python gen_vectors.py -n $Random --seed $Seed --out $vec `
         --report (Join-Path $runDir "vectors_report.txt") --stats (Join-Path $runDir "vectors_stats.txt")
 
     Write-Host "==> [2/4] 编译 RTL + Testbench" -ForegroundColor Cyan
-    $defs = @("-g2012", "-Wall", "-DNCASES=$ncases")
+    $defs = @("-g2012", "-Wall", "-DNCASES=$ncases", "-DTB_DOT_PAR=$DotPar")
     if ($Stress) { $defs += "-DNO_DUMP" }
     & $iverilog @defs -o $simv `
         ..\rtl\exp_lut.sv ..\rtl\seq_div.sv ..\rtl\attention_top.sv ..\tb\tb_attention.sv

@@ -71,13 +71,15 @@ attention-ip/                        ← 仓库根目录（即本项目仓库）
 │   ├── exp_lut.sv                   #    可综合指数查找表（weight 无符号 Q4.4）
 │   └── seq_div.sv                   #    顺序除法器（自带四舍五入）
 ├── tb/
-│   └── tb_attention.sv              # ② 自检测试平台：协议驱动 + 逐项比对 + 周期统计
+│   ├── tb_attention.sv              # ② 自检测试平台：协议驱动 + 逐项比对 + 周期统计
+│   └── tb_attention_mask.sv         # 加分项 A 独立测试：因果 Mask（检查权重/L/输出）
 ├── model/
 │   └── attention_golden.py          # ③ Python 黄金模型（含题目手算示例自检）
 │
 ├── sim/                             # ④ 仿真脚本与仿真结果
 │   ├── run_sim.ps1 / run_sim.sh     #    一键仿真（Windows / Linux·macOS）
 │   ├── gen_vectors.py               #    激励与期望值生成（每例 72 字节）
+│   ├── check_mask.py                #    加分项 A：因果 Mask 的标准答案生成
 │   ├── vcd_wave.py / log2png.py     #    VCD→波形图 / 日志→结果截图
 │   ├── vectors.hex                  #    当前激励（41 例 × 72 字节 = 2952 行）
 │   ├── vectors_report.txt           #    每例的 score/x_max/weight/L/ACC/O 中间结果
@@ -260,7 +262,47 @@ testbench 在每次任务结束后比对 4 个输出元素，并检查 `done` �
 
 ---
 
-## 8. 提交内容对照表
+## 8. 加分项实现与验证（A / B / C）
+
+题目第十二节的加分项里，A、B 是需要独立测试的功能项，C 是参数化。三项均已实现并实测：
+
+| 加分项 | 实现方式 | 独立测试 | 实测结果 |
+| --- | --- | --- | --- |
+| **A 因果 Mask** | `attention_top` 新增 `pos_i` 输入与 `MASK_EN` 参数：`j > pos_i` 的 Key 不参与 `x_max` 检索、权重置 0、不进入 L 与 ACC（MAX / EXP 状态） | `tb/tb_attention_mask.sv`：独立测试平台，检查权重、L、输出三层 | `pos_i` = 0 / 3 / 7 三组全部通过：O = [10,0,0,0] / [35,10,0,0] / [58,19,0,0]，被屏蔽位权重全为 0 |
+| **B 并行点积** | 新增 `DOT_PAR` 参数：`DOT_PAR=D` 时用 D 个乘法器一拍算完一个 Score（新增 `ST_DOT_FAST` 状态），点积 32 拍 → 8 拍 | 同一套 41 例 + 409 例压力测试 | 周期 169 → **145 拍**（−14%），409/409 全部通过；代价是 +3 个 8×8 乘法器与 3 个 18 位加法器 |
+| **C 参数化** | `S` / `D` / `DW` / `W_FRAC` 全部参数化，计数器位宽由 `$clog2` 自动推导，`exp_lut`、`seq_div` 随参数传递 | 把 S 改成 4 后重跑标准回归 | 激励自动变为 40 字节/例，**41/41 通过**，周期 169 → **125 拍** |
+
+### 复现命令
+
+```powershell
+cd sim
+
+# 加分项 A：因果 Mask 独立测试
+iverilog -g2012 -Wall -o mask.vvp ..\rtl\exp_lut.sv ..\rtl\seq_div.sv ..\rtl\attention_top.sv ..\tb\tb_attention_mask.sv
+vvp mask.vvp
+
+# 加分项 B：并行点积（标准回归 / 压力测试）
+powershell -ExecutionPolicy Bypass -File run_sim.ps1 -DotPar 4
+powershell -ExecutionPolicy Bypass -File run_sim.ps1 -Stress -DotPar 4
+
+# 加分项 C：改规模（把 tb/tb_attention.sv 与 sim/gen_vectors.py 里的 S 改成 4 后重跑）
+powershell -ExecutionPolicy Bypass -File run_sim.ps1 -NoWave
+```
+
+### 周期与资源对比
+
+| 配置 | 单次任务周期 | 8×8 乘法器 | 说明 |
+| --- | --- | --- | --- |
+| 基础版（S=8，DOT_PAR=1） | 169 | 1 | 面积优先，点积与除法器都串行复用 |
+| 并行点积（S=8，DOT_PAR=4） | 145 | 4 | 面积换时间；除法器仍复用 1 个，归一化占 50% |
+| 缩小规模（S=4，DOT_PAR=1） | 125 | 1 | 归一化仍是 72 拍（只与 d 有关），占比升到 58% |
+
+> E（指数函数硬件实现方法调研）与 G（S=256、d=64 时的 Softmax 问题）属于报告类加分项：
+> 报告第 10 节给出调研方向，第 8.3 节给出 S=256 的存储、带宽与数值分析结论。
+
+---
+
+## 9. 提交内容对照表
 
 | 题目要求的提交内容 | 本提交包中的位置 |
 | --- | --- |
